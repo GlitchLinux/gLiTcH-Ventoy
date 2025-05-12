@@ -17,12 +17,12 @@ cd ventoy-1.1.05 || exit 1
 
 # List available disks
 echo -e "\nAvailable disks:"
-lsblk -d -o NAME,SIZE,MODEL,TRAN
+lsblk -d -o NAME,SIZE,MODEL,TRAN,TYPE
 echo ""
 
 # Prompt for disk selection
 while true; do
-    read -rp "Enter the disk to install Ventoy to (e.g. sdb): " DISK
+    read -rp "Enter the disk to install Ventoy to (e.g. sdb, loop1): " DISK
     DISK="/dev/${DISK}"
     if [ -b "$DISK" ]; then
         break
@@ -30,6 +30,13 @@ while true; do
         echo "Error: $DISK is not a valid block device. Please try again."
     fi
 done
+
+# Determine if this is a loop device
+IS_LOOP=false
+if [[ "$DISK" =~ /dev/loop ]]; then
+    IS_LOOP=true
+    echo "Detected loop device installation."
+fi
 
 # Prompt for partition style
 read -rp "Partition style (MBR/GPT) [Default: MBR]: " PART_STYLE
@@ -81,8 +88,31 @@ fi
 echo "Installing Ventoy to $DISK..."
 sudo bash Ventoy2Disk.sh -I $PART_OPT $RESERVE_OPT "$DISK"
 
-# Find Ventoy partition (assuming it's the first partition)
-VENTOY_PART="${DISK}1"
+# Handle partition naming differently for loop devices vs regular disks
+if $IS_LOOP; then
+    VENTOY_PART="${DISK}p1"  # Loop devices typically use p1, p2 suffix
+else
+    VENTOY_PART="${DISK}1"   # Regular disks use 1, 2 suffix
+fi
+
+# Wait a moment for partitions to settle
+sleep 2
+
+# Verify partition exists
+if [ ! -b "$VENTOY_PART" ]; then
+    echo "Error: Partition $VENTOY_PART not found!"
+    echo "Trying alternative partition naming..."
+    # Try alternative naming scheme
+    if [ -b "${DISK}1" ]; then
+        VENTOY_PART="${DISK}1"
+    elif [ -b "${DISK}p1" ]; then
+        VENTOY_PART="${DISK}p1"
+    else
+        echo "Could not find Ventoy data partition. Installation may have failed."
+        exit 1
+    fi
+    echo "Found partition at $VENTOY_PART"
+fi
 
 # Unmount if already mounted
 MOUNT_POINT="/mnt/ventoy"
@@ -118,6 +148,12 @@ case "${FS_TYPE,,}" in
         sudo mount "$VENTOY_PART" "$MOUNT_POINT"
         ;;
 esac
+
+# Verify mount was successful
+if ! mountpoint -q "$MOUNT_POINT"; then
+    echo "Error: Failed to mount $VENTOY_PART"
+    exit 1
+fi
 
 # Copy and extract Glitch files
 echo "Copying GLITCH-VENTOY files..."
